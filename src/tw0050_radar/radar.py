@@ -27,9 +27,9 @@ MODE_LABELS = {
 }
 
 MODE_LOOKBACK_HOURS = {
-    "premarket": 18,
-    "intraday": 8,
-    "postmarket": 12,
+    "premarket": 14,
+    "intraday": 5,
+    "postmarket": 6,
 }
 
 MARKET_KEYWORDS = [
@@ -142,8 +142,8 @@ def main() -> None:
     lookback_hours = args.lookback_hours or int(
         os.getenv("DIGEST_LOOKBACK_HOURS", str(MODE_LOOKBACK_HOURS[args.mode]))
     )
-    max_articles = args.max_articles or int(os.getenv("DIGEST_MAX_ARTICLES", "10"))
-
+    max_articles = args.max_articles or int(os.getenv("DIGEST_MAX_ARTICLES", "3"))
+    
     articles = fetch_articles(
         mode=args.mode,
         constituents=constituents,
