@@ -12,6 +12,7 @@ from email.utils import parsedate_to_datetime
 from html import escape, unescape
 from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from zoneinfo import ZoneInfo
 
 import feedparser
 from dotenv import load_dotenv
@@ -19,6 +20,8 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config" / "constituents_0050.json"
+DEFAULT_STATE_PATH = PROJECT_ROOT / ".radar-state" / "sent_articles.json"
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 MODE_LABELS = {
     "premarket": "盤前新聞",
@@ -27,9 +30,9 @@ MODE_LABELS = {
 }
 
 MODE_LOOKBACK_HOURS = {
-    "premarket": 14,
+    "premarket": 18,
     "intraday": 5,
-    "postmarket": 6,
+    "postmarket": 5,
 }
 
 MARKET_KEYWORDS = [
@@ -143,24 +146,29 @@ def main() -> None:
         os.getenv("DIGEST_LOOKBACK_HOURS", str(MODE_LOOKBACK_HOURS[args.mode]))
     )
     max_articles = args.max_articles or int(os.getenv("DIGEST_MAX_ARTICLES", "3"))
-    
-    articles = fetch_articles(
+    state_path = Path(os.getenv("RADAR_STATE_PATH", str(DEFAULT_STATE_PATH)))
+    state = load_state(state_path)
+
+    candidates = fetch_articles(
         mode=args.mode,
         constituents=constituents,
         heavyweights=heavyweights,
         lookback_hours=lookback_hours,
-    )[:max_articles]
+    )
+    articles = filter_sent_articles(candidates, state)[:max_articles]
 
-    subject = f"0050 成分股{MODE_LABELS[args.mode]}｜{datetime.now().strftime('%Y-%m-%d')}"
+    subject = f"0050 成分股{MODE_LABELS[args.mode]}｜{today_taipei()}"
     plain = render_plain_text(args.mode, articles)
     html = render_html(args.mode, articles)
 
     if smtp_is_configured():
         send_email(subject=subject, plain=plain, html=html)
+        save_state(state_path, update_state(state, articles))
         print(f"Sent {len(articles)} articles: {subject}")
     else:
         print(f"{subject}\n")
         print(plain)
+        save_state(state_path, update_state(state, articles))
         print("\nSMTP is not configured, so the digest was printed instead of emailed.")
 
 
@@ -190,6 +198,69 @@ def load_constituents(path: Path = CONFIG_PATH) -> tuple[list[Constituent], set[
     return constituents, set(payload.get("heavyweights", []))
 
 
+def today_taipei() -> str:
+    return datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")
+
+
+def load_state(path: Path) -> dict[str, object]:
+    empty_state: dict[str, object] = {"date": today_taipei(), "urls": [], "title_keys": [], "titles": []}
+    if not path.exists():
+        return empty_state
+
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty_state
+
+    if state.get("date") != today_taipei():
+        return empty_state
+
+    return {
+        "date": state.get("date", today_taipei()),
+        "urls": list(state.get("urls", [])),
+        "title_keys": list(state.get("title_keys", [])),
+        "titles": list(state.get("titles", [])),
+    }
+
+
+def filter_sent_articles(articles: list[Article], state: dict[str, object]) -> list[Article]:
+    sent_urls = set(str(url) for url in state.get("urls", []))
+    sent_title_keys = set(str(title_key) for title_key in state.get("title_keys", []))
+    sent_titles = [str(title) for title in state.get("titles", [])]
+
+    fresh_articles = []
+    for article in articles:
+        if article.url in sent_urls or dedupe_key(article.title) in sent_title_keys:
+            continue
+        if any(title_similarity(article.title, sent_title) >= 0.58 for sent_title in sent_titles):
+            continue
+        fresh_articles.append(article)
+    return fresh_articles
+
+
+def update_state(state: dict[str, object], articles: list[Article]) -> dict[str, object]:
+    urls = set(str(url) for url in state.get("urls", []))
+    title_keys = set(str(title_key) for title_key in state.get("title_keys", []))
+    titles = set(str(title) for title in state.get("titles", []))
+
+    for article in articles:
+        urls.add(article.url)
+        title_keys.add(dedupe_key(article.title))
+        titles.add(article.title)
+
+    return {
+        "date": today_taipei(),
+        "urls": sorted(urls),
+        "title_keys": sorted(title_keys),
+        "titles": sorted(titles),
+    }
+
+
+def save_state(path: Path, state: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def fetch_articles(
     *,
     mode: str,
@@ -215,6 +286,8 @@ def fetch_articles(
                 continue
 
             published_at = entry_datetime(entry)
+            if mode in {"intraday", "postmarket"} and not published_at:
+                continue
             if published_at and published_at < cutoff:
                 continue
 
@@ -390,13 +463,28 @@ def dedupe_key(title: str) -> str:
     return normalized[:90]
 
 
+def title_similarity(left: str, right: str) -> float:
+    left_tokens = title_tokens(left)
+    right_tokens = title_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def title_tokens(title: str) -> set[str]:
+    normalized = re.sub(r"\s*[-|｜]\s*[^-|｜]{1,30}$", "", title.lower())
+    ascii_tokens = set(re.findall(r"[a-z0-9]{3,}", normalized))
+    cjk_tokens = set(re.findall(r"[\u4e00-\u9fff]{2}", normalized))
+    return ascii_tokens | cjk_tokens
+
+
 def render_plain_text(mode: str, articles: list[Article]) -> str:
     if not articles:
         return f"這次沒有找到符合條件的 0050 成分股{MODE_LABELS[mode]}。"
 
     lines = [f"0050 成分股{MODE_LABELS[mode]}重點：", ""]
     for index, article in enumerate(articles, 1):
-        published = article.published_at.astimezone().strftime("%Y-%m-%d %H:%M") if article.published_at else "時間未知"
+        published = article.published_at.astimezone(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M 台北時間") if article.published_at else "時間未知"
         lines.extend(
             [
                 f"{index}. {article.title}",
@@ -418,7 +506,7 @@ def render_html(mode: str, articles: list[Article]) -> str:
 
     items = []
     for article in articles:
-        published = article.published_at.astimezone().strftime("%Y-%m-%d %H:%M") if article.published_at else "時間未知"
+        published = article.published_at.astimezone(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M 台北時間") if article.published_at else "時間未知"
         matched = ", ".join(article.matched) if article.matched else "市場整體"
         reasons = "；".join(article.reasons) if article.reasons else "符合關鍵字與時效條件"
         items.append(
@@ -473,4 +561,3 @@ def send_email(*, subject: str, plain: str, html: str) -> None:
 
 if __name__ == "__main__":
     main()
-
