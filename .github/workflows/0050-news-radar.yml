@@ -1,0 +1,61 @@
+name: 0050 News Radar
+
+on:
+  schedule:
+    # 08:00 Asia/Taipei = 00:00 UTC
+    - cron: "0 0 * * 1-5"
+    # 12:00 Asia/Taipei = 04:00 UTC
+    - cron: "0 4 * * 1-5"
+    # 18:00 Asia/Taipei = 10:00 UTC
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Digest mode
+        required: true
+        default: premarket
+        type: choice
+        options:
+          - premarket
+          - intraday
+          - postmarket
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Choose digest mode
+        id: mode
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+          elif [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
+            mode="premarket"
+          elif [[ "${{ github.event.schedule }}" == "0 4 * * 1-5" ]]; then
+            mode="intraday"
+          else
+            mode="postmarket"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: Send 0050 digest
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          DIGEST_MAX_ARTICLES: "10"
+        run: PYTHONPATH=src python -m tw0050_radar.radar --mode "${{ steps.mode.outputs.mode }}"
+
