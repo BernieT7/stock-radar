@@ -41,9 +41,9 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             mode="${{ inputs.mode }}"
-          elif [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
+          elif [[ "${{ github.event.schedule }}" == "7 0 * * 1-5" ]]; then
             mode="premarket"
-          elif [[ "${{ github.event.schedule }}" == "0 4 * * 1-5" ]]; then
+          elif [[ "${{ github.event.schedule }}" == "7 4 * * 1-5" ]]; then
             mode="intraday"
           else
             mode="postmarket"
@@ -58,6 +58,6 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          DIGEST_MAX_ARTICLES: "10"
+          DIGEST_MAX_ARTICLES: "3"
         run: PYTHONPATH=src python -m tw0050_radar.radar --mode "${{ steps.mode.outputs.mode }}"
 
