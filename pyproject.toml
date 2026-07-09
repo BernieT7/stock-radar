@@ -1,0 +1,16 @@
+[project]
+name = "taiwan-0050-news-radar"
+version = "0.1.0"
+description = "Scheduled 0050 constituent news radar for Taiwan stock market."
+requires-python = ">=3.11"
+dependencies = [
+    "feedparser>=6.0.11",
+    "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+tw0050-radar = "tw0050_radar.radar:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
